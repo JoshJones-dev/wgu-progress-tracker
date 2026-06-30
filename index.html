@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WGU Graduation Progress Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel2: #1f2937;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --green: #22c55e;
+      --yellow: #facc15;
+      --blue: #38bdf8;
+      --red: #fb7185;
+      --border: rgba(255,255,255,.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: radial-gradient(circle at top, #1e293b, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 18px; }
+    .hero {
+      background: rgba(17,24,39,.88);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 28px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.28);
+    }
+    h1 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 44px); }
+    .sub { color: var(--muted); margin: 0 0 22px; line-height: 1.5; }
+    .upload {
+      border: 2px dashed rgba(255,255,255,.22);
+      border-radius: 18px;
+      padding: 22px;
+      background: rgba(31,41,55,.7);
+    }
+    input[type=file] { width: 100%; margin-top: 12px; color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 18px; }
+    .card {
+      background: rgba(15,23,42,.72);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+    }
+    .label { color: var(--muted); font-size: 13px; }
+    .num { font-size: 32px; font-weight: 800; margin-top: 6px; }
+    .barbox { margin-top: 20px; background: rgba(255,255,255,.08); height: 24px; border-radius: 999px; overflow: hidden; }
+    .bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--green), #86efac); transition: width .4s ease; }
+    .legend { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; color: var(--muted); font-size: 14px; }
+    .dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 6px; }
+    .done { background: var(--green); } .active { background: var(--yellow); } .todo { background: var(--blue); } .unknown { background: var(--red); }
+    .section { margin-top: 22px; }
+    .section h2 { margin: 0 0 12px; }
+    table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 14px; }
+    th, td { padding: 12px; border-bottom: 1px solid var(--border); text-align: left; }
+    th { color: var(--muted); font-weight: 700; background: rgba(255,255,255,.04); }
+    tr:last-child td { border-bottom: 0; }
+    .pill { display: inline-block; padding: 5px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #06111f; }
+    .pill.Done { background: var(--green); }
+    .pill.Active { background: var(--yellow); }
+    .pill.ToDo { background: var(--blue); }
+    .pill.Unknown { background: var(--red); color: white; }
+    .hidden { display: none; }
+    .error { color: #fecaca; margin-top: 12px; }
+    @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, 1fr); } .num { font-size: 26px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>WGU Graduation Progress Tracker</h1>
+      <p class="sub">Upload a WGU degree plan Excel file. The page reads course colors: green = done, yellow = active, blue = still to do.</p>
+      <div class="upload">
+        <strong>Upload degree plan</strong>
+        <input id="file" type="file" accept=".xlsx,.xls" />
+        <div id="error" class="error"></div>
+      </div>
+
+      <div id="results" class="hidden">
+        <div class="grid">
+          <div class="card"><div class="label">Graduation Progress</div><div id="percent" class="num">0%</div></div>
+          <div class="card"><div class="label">Completed CUs</div><div id="doneCredits" class="num">0</div></div>
+          <div class="card"><div class="label">Remaining CUs</div><div id="todoCredits" class="num">0</div></div>
+          <div class="card"><div class="label">Classes Left</div><div id="classesLeft" class="num">0</div></div>
+        </div>
+        <div class="barbox"><div id="bar" class="bar"></div></div>
+        <div class="legend">
+          <span><i class="dot done"></i>Done</span>
+          <span><i class="dot active"></i>Active</span>
+          <span><i class="dot todo"></i>To do</span>
+          <span><i class="dot unknown"></i>Unknown</span>
+        </div>
+
+        <div class="section">
+          <h2 id="studentTitle">Degree Plan</h2>
+          <table>
+            <thead><tr><th>Course</th><th>CUs</th><th>Status</th><th>Term</th></tr></thead>
+            <tbody id="courseRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const COLORS = {
+      GREEN: ['FF00B050', '00B050'],
+      YELLOW: ['FFFFFF00', 'FFFF00'],
+      BLUE: ['FF00B0F0', '00B0F0']
+    };
+
+    document.getElementById('file').addEventListener('change', async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      clearUI();
+      try {
+        const buffer = await file.arrayBuffer();
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(buffer);
+        const sheet = workbook.worksheets[0];
+        const parsed = parseWguSheet(sheet);
+        render(parsed);
+      } catch (err) {
+        document.getElementById('error').textContent = 'Could not read that file. Make sure it is an Excel .xlsx degree plan.';
+        console.error(err);
+      }
+    });
+
+    function parseWguSheet(sheet) {
+      const title = String(sheet.getCell(1, 1).value || 'WGU Degree Plan');
+      const courses = [];
+      let currentTerms = {};
+
+      sheet.eachRow((row, rowNumber) => {
+        [1, 3, 5].forEach(courseCol => {
+          const raw = row.getCell(courseCol).value;
+          const text = cellText(raw);
+          if (!text) return;
+
+          if (/^Term\s+\d+/i.test(text)) {
+            currentTerms[courseCol] = text;
+            return;
+          }
+
+          if (isIgnoredText(text)) return;
+
+          const credits = Number(row.getCell(courseCol + 1).value || 0);
+          if (!credits || Number.isNaN(credits)) return;
+
+          const status = statusFromCell(row.getCell(courseCol));
+          courses.push({
+            course: text,
+            credits,
+            status,
+            term: currentTerms[courseCol] || ''
+          });
+        });
+      });
+
+      return { title, courses };
+    }
+
+    function cellText(value) {
+      if (value == null) return '';
+      if (typeof value === 'object' && value.richText) return value.richText.map(x => x.text).join('').trim();
+      if (typeof value === 'object' && value.text) return String(value.text).trim();
+      return String(value).trim();
+    }
+
+    function isIgnoredText(text) {
+      return /Bachelor of Science/i.test(text) || /means class is done/i.test(text) || /means active/i.test(text) || /still to do/i.test(text) || /^CUs$/i.test(text);
+    }
+
+    function statusFromCell(cell) {
+      const argb = cell.fill && cell.fill.fgColor && cell.fill.fgColor.argb;
+      if (COLORS.GREEN.includes(argb)) return 'Done';
+      if (COLORS.YELLOW.includes(argb)) return 'Active';
+      if (COLORS.BLUE.includes(argb)) return 'ToDo';
+      return 'Unknown';
+    }
+
+    function render({ title, courses }) {
+      const totalCredits = sum(courses);
+      const done = courses.filter(c => c.status === 'Done');
+      const active = courses.filter(c => c.status === 'Active');
+      const todo = courses.filter(c => c.status === 'ToDo');
+      const unknown = courses.filter(c => c.status === 'Unknown');
+      const doneCredits = sum(done);
+      const activeCredits = sum(active);
+      const leftCredits = sum(todo) + activeCredits + sum(unknown);
+      const percent = totalCredits ? Math.round((doneCredits / totalCredits) * 100) : 0;
+      const remainingClasses = courses.filter(c => c.status !== 'Done');
+
+      document.getElementById('studentTitle').textContent = title;
+      document.getElementById('percent').textContent = percent + '%';
+      document.getElementById('doneCredits').textContent = doneCredits;
+      document.getElementById('todoCredits').textContent = leftCredits;
+      document.getElementById('classesLeft').textContent = remainingClasses.length;
+      document.getElementById('bar').style.width = percent + '%';
+
+      const tbody = document.getElementById('courseRows');
+      tbody.innerHTML = '';
+      remainingClasses.concat(done).forEach(c => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${escapeHtml(c.course)}</td>
+          <td>${c.credits}</td>
+          <td><span class="pill ${c.status}">${statusLabel(c.status)}</span></td>
+          <td>${escapeHtml(c.term)}</td>`;
+        tbody.appendChild(tr);
+      });
+
+      document.getElementById('results').classList.remove('hidden');
+    }
+
+    function sum(items) { return items.reduce((n, x) => n + Number(x.credits || 0), 0); }
+    function statusLabel(status) { return status === 'ToDo' ? 'To do' : status; }
+    function clearUI() { document.getElementById('error').textContent = ''; }
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+    }
+  </script>
+</body>
+</html>
