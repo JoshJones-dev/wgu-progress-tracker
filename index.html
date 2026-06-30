@@ -16,6 +16,7 @@
       --yellow: #facc15;
       --blue: #38bdf8;
       --red: #fb7185;
+      --purple: #a78bfa;
       --border: rgba(255,255,255,.12);
     }
     * { box-sizing: border-box; }
@@ -26,7 +27,7 @@
       color: var(--text);
       min-height: 100vh;
     }
-    .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 18px; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 32px 18px; }
     .hero {
       background: rgba(17,24,39,.88);
       border: 1px solid var(--border);
@@ -36,13 +37,46 @@
     }
     h1 { margin: 0 0 8px; font-size: clamp(28px, 4vw, 44px); }
     .sub { color: var(--muted); margin: 0 0 22px; line-height: 1.5; }
-    .upload {
+    .upload, .settings {
       border: 2px dashed rgba(255,255,255,.22);
       border-radius: 18px;
       padding: 22px;
       background: rgba(31,41,55,.7);
+      margin-top: 14px;
     }
     input[type=file] { width: 100%; margin-top: 12px; color: var(--text); }
+    label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    input[type=text], input[type=datetime-local] {
+      width: 100%;
+      background: rgba(15,23,42,.9);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      padding: 12px;
+      outline: none;
+    }
+    .formgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 14px; }
+    button {
+      cursor: pointer;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-weight: 800;
+      color: #06111f;
+      background: #e2e8f0;
+    }
+    .ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+    .btnrow { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+    .countdownHero {
+      margin-top: 18px;
+      padding: 24px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, rgba(56,189,248,.18), rgba(167,139,250,.16));
+      border: 1px solid rgba(255,255,255,.16);
+    }
+    .countdownLabel { color: var(--muted); font-size: 14px; }
+    .countdownBig { font-size: clamp(34px, 7vw, 72px); font-weight: 900; letter-spacing: -1px; margin: 8px 0; }
+    .termLine { color: var(--text); font-size: 18px; }
     .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 18px; }
     .card {
       background: rgba(15,23,42,.72);
@@ -70,14 +104,46 @@
     .pill.Unknown { background: var(--red); color: white; }
     .hidden { display: none; }
     .error { color: #fecaca; margin-top: 12px; }
-    @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, 1fr); } .num { font-size: 26px; } }
+    .saved { color: #bbf7d0; margin-top: 10px; font-size: 13px; }
+    @media (max-width: 860px) { .formgrid, .grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 560px) { .formgrid, .grid { grid-template-columns: 1fr; } .num { font-size: 26px; } }
   </style>
 </head>
 <body>
   <main class="wrap">
     <section class="hero">
       <h1>WGU Graduation Progress Tracker</h1>
-      <p class="sub">Upload a WGU degree plan Excel file. The page reads course colors: green = done, yellow = active, blue = still to do.</p>
+      <p class="sub">Upload a WGU degree plan Excel file. The page reads course colors: green = done, yellow = active, blue = still to do. Your uploaded plan and term settings are saved locally in this browser only.</p>
+
+      <div id="countdownHero" class="countdownHero">
+        <div class="countdownLabel">Time left in current term</div>
+        <div id="countdownBig" class="countdownBig">Add term end date</div>
+        <div id="termLine" class="termLine">Current term: Not set yet</div>
+      </div>
+
+      <div class="settings">
+        <strong>Term settings</strong>
+        <div class="formgrid">
+          <div>
+            <label for="studentName">Student name</label>
+            <input id="studentName" type="text" placeholder="Example: Joshua Jones" />
+          </div>
+          <div>
+            <label for="termName">Current term</label>
+            <input id="termName" type="text" placeholder="Example: Term 4" />
+          </div>
+          <div>
+            <label for="termEnd">Term end date and time</label>
+            <input id="termEnd" type="datetime-local" />
+          </div>
+        </div>
+        <div class="btnrow">
+          <button id="saveSettings">Save term settings</button>
+          <button id="clearSaved" class="ghost">Clear saved data</button>
+        </div>
+        <div id="savedMsg" class="saved"></div>
+      </div>
+
       <div class="upload">
         <strong>Upload degree plan</strong>
         <input id="file" type="file" accept=".xlsx,.xls" />
@@ -111,13 +177,35 @@
   </main>
 
   <script>
+    const STORAGE_KEY = 'wguProgressTracker.v2';
     const COLORS = {
       GREEN: ['FF00B050', '00B050'],
       YELLOW: ['FFFFFF00', 'FFFF00'],
       BLUE: ['FF00B0F0', '00B0F0']
     };
 
-    document.getElementById('file').addEventListener('change', async (event) => {
+    let lastParsed = null;
+    let countdownTimer = null;
+
+    document.addEventListener('DOMContentLoaded', restoreSavedData);
+    document.getElementById('file').addEventListener('change', handleFileUpload);
+    document.getElementById('saveSettings').addEventListener('click', () => {
+      saveCurrentState();
+      renderCountdown();
+      flashSaved('Saved locally in this browser.');
+    });
+    document.getElementById('clearSaved').addEventListener('click', () => {
+      localStorage.removeItem(STORAGE_KEY);
+      location.reload();
+    });
+    ['studentName', 'termName', 'termEnd'].forEach(id => {
+      document.getElementById(id).addEventListener('input', () => {
+        saveCurrentState(false);
+        renderCountdown();
+      });
+    });
+
+    async function handleFileUpload(event) {
       const file = event.target.files[0];
       if (!file) return;
       clearUI();
@@ -127,19 +215,28 @@
         await workbook.xlsx.load(buffer);
         const sheet = workbook.worksheets[0];
         const parsed = parseWguSheet(sheet);
+        lastParsed = parsed;
+
+        const activeTerm = inferActiveTerm(parsed.courses);
+        if (activeTerm && !document.getElementById('termName').value.trim()) {
+          document.getElementById('termName').value = activeTerm;
+        }
+
         render(parsed);
+        saveCurrentState(true, buffer, file.name);
+        flashSaved('Degree plan uploaded and saved locally.');
       } catch (err) {
         document.getElementById('error').textContent = 'Could not read that file. Make sure it is an Excel .xlsx degree plan.';
         console.error(err);
       }
-    });
+    }
 
     function parseWguSheet(sheet) {
       const title = String(sheet.getCell(1, 1).value || 'WGU Degree Plan');
       const courses = [];
       let currentTerms = {};
 
-      sheet.eachRow((row, rowNumber) => {
+      sheet.eachRow((row) => {
         [1, 3, 5].forEach(courseCol => {
           const raw = row.getCell(courseCol).value;
           const text = cellText(raw);
@@ -187,6 +284,13 @@
       return 'Unknown';
     }
 
+    function inferActiveTerm(courses) {
+      const active = courses.find(c => c.status === 'Active' && c.term);
+      if (active) return active.term;
+      const firstRemaining = courses.find(c => c.status !== 'Done' && c.term);
+      return firstRemaining ? firstRemaining.term : '';
+    }
+
     function render({ title, courses }) {
       const totalCredits = sum(courses);
       const done = courses.filter(c => c.status === 'Done');
@@ -198,8 +302,9 @@
       const leftCredits = sum(todo) + activeCredits + sum(unknown);
       const percent = totalCredits ? Math.round((doneCredits / totalCredits) * 100) : 0;
       const remainingClasses = courses.filter(c => c.status !== 'Done');
+      const student = document.getElementById('studentName').value.trim();
 
-      document.getElementById('studentTitle').textContent = title;
+      document.getElementById('studentTitle').textContent = student ? `${student}'s Degree Plan` : title;
       document.getElementById('percent').textContent = percent + '%';
       document.getElementById('doneCredits').textContent = doneCredits;
       document.getElementById('todoCredits').textContent = leftCredits;
@@ -219,9 +324,143 @@
       });
 
       document.getElementById('results').classList.remove('hidden');
+      renderCountdown();
+    }
+
+    function renderCountdown() {
+      if (countdownTimer) clearInterval(countdownTimer);
+      updateCountdown();
+      countdownTimer = setInterval(updateCountdown, 1000);
+    }
+
+    function updateCountdown() {
+      const termName = document.getElementById('termName').value.trim() || 'Not set yet';
+      const termEndRaw = document.getElementById('termEnd').value;
+      const termLine = document.getElementById('termLine');
+      termLine.textContent = `Current term: ${termName}`;
+
+      if (!termEndRaw) {
+        document.getElementById('countdownBig').textContent = 'Add term end date';
+        return;
+      }
+
+      const end = new Date(termEndRaw);
+      const now = new Date();
+      const diffMs = end.getTime() - now.getTime();
+
+      if (Number.isNaN(end.getTime())) {
+        document.getElementById('countdownBig').textContent = 'Invalid date';
+        return;
+      }
+
+      if (diffMs <= 0) {
+        document.getElementById('countdownBig').textContent = 'Term ended';
+        return;
+      }
+
+      const totalSeconds = Math.floor(diffMs / 1000);
+      const days = Math.floor(totalSeconds / 86400);
+      const hours = Math.floor((totalSeconds % 86400) / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+
+      document.getElementById('countdownBig').textContent = `${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
+    }
+
+    function saveCurrentState(includeParsed = false, buffer = null, fileName = '') {
+      const existing = loadStorage() || {};
+      const data = {
+        ...existing,
+        studentName: document.getElementById('studentName').value,
+        termName: document.getElementById('termName').value,
+        termEnd: document.getElementById('termEnd').value,
+        savedAt: new Date().toISOString()
+      };
+
+      if (includeParsed && lastParsed) data.lastParsed = lastParsed;
+      if (buffer) {
+        data.fileName = fileName;
+        data.fileBase64 = arrayBufferToBase64(buffer);
+      }
+
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      } catch (err) {
+        console.warn('Local save failed. The file may be too large for browser localStorage.', err);
+        if (includeParsed && lastParsed) {
+          try {
+            delete data.fileBase64;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+          } catch (innerErr) {
+            console.warn('Parsed-data fallback save failed.', innerErr);
+          }
+        }
+      }
+    }
+
+    async function restoreSavedData() {
+      const data = loadStorage();
+      if (!data) {
+        renderCountdown();
+        return;
+      }
+
+      document.getElementById('studentName').value = data.studentName || '';
+      document.getElementById('termName').value = data.termName || '';
+      document.getElementById('termEnd').value = data.termEnd || '';
+
+      if (data.lastParsed) {
+        lastParsed = data.lastParsed;
+        render(lastParsed);
+        flashSaved('Loaded saved progress from this browser.');
+      } else if (data.fileBase64) {
+        try {
+          const buffer = base64ToArrayBuffer(data.fileBase64);
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.load(buffer);
+          const parsed = parseWguSheet(workbook.worksheets[0]);
+          lastParsed = parsed;
+          render(parsed);
+          flashSaved('Loaded saved progress from this browser.');
+        } catch (err) {
+          console.warn('Could not restore saved Excel file.', err);
+          renderCountdown();
+        }
+      } else {
+        renderCountdown();
+      }
+    }
+
+    function loadStorage() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+      catch { return null; }
+    }
+
+    function arrayBufferToBase64(buffer) {
+      let binary = '';
+      const bytes = new Uint8Array(buffer);
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      }
+      return btoa(binary);
+    }
+
+    function base64ToArrayBuffer(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    }
+
+    function flashSaved(message) {
+      const el = document.getElementById('savedMsg');
+      el.textContent = message;
+      setTimeout(() => { if (el.textContent === message) el.textContent = ''; }, 4000);
     }
 
     function sum(items) { return items.reduce((n, x) => n + Number(x.credits || 0), 0); }
+    function pad(n) { return String(n).padStart(2, '0'); }
     function statusLabel(status) { return status === 'ToDo' ? 'To do' : status; }
     function clearUI() { document.getElementById('error').textContent = ''; }
     function escapeHtml(str) {
