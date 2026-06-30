@@ -77,6 +77,11 @@
     .countdownLabel { color: var(--muted); font-size: 14px; }
     .countdownBig { font-size: clamp(34px, 7vw, 72px); font-weight: 900; letter-spacing: -1px; margin: 8px 0; }
     .termLine { color: var(--text); font-size: 18px; }
+    .autoNote { color: var(--muted); font-size: 13px; margin-left: 8px; font-weight: 400; }
+    .countdownTiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 16px; }
+    .countdownTiles div { background: rgba(15,23,42,.64); border: 1px solid var(--border); border-radius: 16px; padding: 12px; text-align: center; }
+    .countdownTiles strong { display: block; font-size: clamp(26px, 5vw, 46px); line-height: 1; }
+    .countdownTiles span { display: block; color: var(--muted); font-size: 12px; margin-top: 6px; text-transform: uppercase; letter-spacing: .08em; }
     .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 18px; }
     .card {
       background: rgba(15,23,42,.72);
@@ -106,23 +111,29 @@
     .error { color: #fecaca; margin-top: 12px; }
     .saved { color: #bbf7d0; margin-top: 10px; font-size: 13px; }
     @media (max-width: 860px) { .formgrid, .grid { grid-template-columns: repeat(2, 1fr); } }
-    @media (max-width: 560px) { .formgrid, .grid { grid-template-columns: 1fr; } .num { font-size: 26px; } }
+    @media (max-width: 560px) { .formgrid, .grid, .countdownTiles { grid-template-columns: 1fr 1fr; } .num { font-size: 26px; } }
   </style>
 </head>
 <body>
   <main class="wrap">
     <section class="hero">
       <h1>WGU Graduation Progress Tracker</h1>
-      <p class="sub">Upload a WGU degree plan Excel file. The page reads course colors: green = done, yellow = active, blue = still to do. Your uploaded plan and term settings are saved locally in this browser only.</p>
+      <p class="sub">Upload a WGU degree plan Excel file. The page reads course colors and automatically finds the current term date range from the Excel headers, then shows a live countdown to the exact second. Your uploaded plan is saved locally in this browser only.</p>
 
       <div id="countdownHero" class="countdownHero">
         <div class="countdownLabel">Time left in current term</div>
-        <div id="countdownBig" class="countdownBig">Add term end date</div>
+        <div id="countdownBig" class="countdownBig">Upload degree plan</div>
+        <div class="countdownTiles">
+          <div><strong id="cdDays">--</strong><span>Days</span></div>
+          <div><strong id="cdHours">--</strong><span>Hours</span></div>
+          <div><strong id="cdMinutes">--</strong><span>Minutes</span></div>
+          <div><strong id="cdSeconds">--</strong><span>Seconds</span></div>
+        </div>
         <div id="termLine" class="termLine">Current term: Not set yet</div>
       </div>
 
       <div class="settings">
-        <strong>Term settings</strong>
+        <strong>Term settings</strong> <span class="autoNote">Auto-filled from the Excel term header when possible.</span>
         <div class="formgrid">
           <div>
             <label for="studentName">Student name</label>
@@ -130,7 +141,7 @@
           </div>
           <div>
             <label for="termName">Current term</label>
-            <input id="termName" type="text" placeholder="Example: Term 4" />
+            <input id="termName" type="text" placeholder="Auto-detected, example: Term 7" />
           </div>
           <div>
             <label for="termEnd">Term end date and time</label>
@@ -177,7 +188,7 @@
   </main>
 
   <script>
-    const STORAGE_KEY = 'wguProgressTracker.v2';
+    const STORAGE_KEY = 'wguProgressTracker.v3';
     const COLORS = {
       GREEN: ['FF00B050', '00B050'],
       YELLOW: ['FFFFFF00', 'FFFF00'],
@@ -217,11 +228,7 @@
         const parsed = parseWguSheet(sheet);
         lastParsed = parsed;
 
-        const activeTerm = inferActiveTerm(parsed.courses);
-        if (activeTerm && !document.getElementById('termName').value.trim()) {
-          document.getElementById('termName').value = activeTerm;
-        }
-
+        applyDetectedTerm(parsed);
         render(parsed);
         saveCurrentState(true, buffer, file.name);
         flashSaved('Degree plan uploaded and saved locally.');
@@ -234,6 +241,7 @@
     function parseWguSheet(sheet) {
       const title = String(sheet.getCell(1, 1).value || 'WGU Degree Plan');
       const courses = [];
+      const terms = [];
       let currentTerms = {};
 
       sheet.eachRow((row) => {
@@ -242,8 +250,10 @@
           const text = cellText(raw);
           if (!text) return;
 
-          if (/^Term\s+\d+/i.test(text)) {
-            currentTerms[courseCol] = text;
+          const termInfo = parseTermHeader(text);
+          if (termInfo) {
+            currentTerms[courseCol] = termInfo;
+            if (!terms.some(t => t.name === termInfo.name)) terms.push(termInfo);
             return;
           }
 
@@ -252,17 +262,60 @@
           const credits = Number(row.getCell(courseCol + 1).value || 0);
           if (!credits || Number.isNaN(credits)) return;
 
+          const term = currentTerms[courseCol] || { name: '', start: '', end: '' };
           const status = statusFromCell(row.getCell(courseCol));
           courses.push({
             course: text,
             credits,
             status,
-            term: currentTerms[courseCol] || ''
+            term: term.name,
+            termStart: term.start,
+            termEnd: term.end
           });
         });
       });
 
-      return { title, courses };
+      return { title, courses, terms };
+    }
+
+    function parseTermHeader(text) {
+      const clean = text.replace(/\s+/g, ' ').trim();
+      const match = clean.match(/^(Term\s+\d+)\s*\(\s*(.+?)\s*-\s*(.+?)\s*\)$/i);
+      if (!match) return null;
+      const start = parseLongDate(match[2], false);
+      const end = parseLongDate(match[3], true);
+      return {
+        name: match[1].replace(/\s+/g, ' '),
+        label: clean,
+        start: start ? start.toISOString() : '',
+        end: end ? end.toISOString() : '',
+        startLocal: start ? toDatetimeLocal(start) : '',
+        endLocal: end ? toDatetimeLocal(end) : ''
+      };
+    }
+
+    function parseLongDate(value, endOfDay) {
+      const date = new Date(String(value).trim());
+      if (Number.isNaN(date.getTime())) return null;
+      if (endOfDay) date.setHours(23, 59, 59, 999);
+      else date.setHours(0, 0, 0, 0);
+      return date;
+    }
+
+    function toDatetimeLocal(date) {
+      const y = date.getFullYear();
+      const m = pad(date.getMonth() + 1);
+      const d = pad(date.getDate());
+      const h = pad(date.getHours());
+      const min = pad(date.getMinutes());
+      return `${y}-${m}-${d}T${h}:${min}`;
+    }
+
+    function applyDetectedTerm(parsed) {
+      const detected = inferCurrentTerm(parsed.terms, parsed.courses);
+      if (!detected) return;
+      document.getElementById('termName').value = detected.name;
+      if (detected.endLocal) document.getElementById('termEnd').value = detected.endLocal;
     }
 
     function cellText(value) {
@@ -284,11 +337,21 @@
       return 'Unknown';
     }
 
-    function inferActiveTerm(courses) {
+    function inferCurrentTerm(terms, courses) {
+      const now = new Date();
+      const byDate = (terms || []).find(t => {
+        const start = new Date(t.start);
+        const end = new Date(t.end);
+        return !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && now >= start && now <= end;
+      });
+      if (byDate) return byDate;
+
       const active = courses.find(c => c.status === 'Active' && c.term);
-      if (active) return active.term;
+      if (active) return (terms || []).find(t => t.name === active.term) || { name: active.term, endLocal: active.termEnd ? toDatetimeLocal(new Date(active.termEnd)) : '' };
+
       const firstRemaining = courses.find(c => c.status !== 'Done' && c.term);
-      return firstRemaining ? firstRemaining.term : '';
+      if (firstRemaining) return (terms || []).find(t => t.name === firstRemaining.term) || { name: firstRemaining.term, endLocal: firstRemaining.termEnd ? toDatetimeLocal(new Date(firstRemaining.termEnd)) : '' };
+      return null;
     }
 
     function render({ title, courses }) {
@@ -334,13 +397,14 @@
     }
 
     function updateCountdown() {
-      const termName = document.getElementById('termName').value.trim() || 'Not set yet';
+      const termName = document.getElementById('termName').value.trim() || 'Not detected yet';
       const termEndRaw = document.getElementById('termEnd').value;
       const termLine = document.getElementById('termLine');
       termLine.textContent = `Current term: ${termName}`;
 
       if (!termEndRaw) {
-        document.getElementById('countdownBig').textContent = 'Add term end date';
+        document.getElementById('countdownBig').textContent = 'Upload degree plan';
+        setCountdownTiles('--', '--', '--', '--');
         return;
       }
 
@@ -350,11 +414,16 @@
 
       if (Number.isNaN(end.getTime())) {
         document.getElementById('countdownBig').textContent = 'Invalid date';
+        setCountdownTiles('--', '--', '--', '--');
         return;
       }
 
+      const endLabel = end.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+      termLine.textContent = `Current term: ${termName} • Ends ${endLabel}`;
+
       if (diffMs <= 0) {
         document.getElementById('countdownBig').textContent = 'Term ended';
+        setCountdownTiles('00', '00', '00', '00');
         return;
       }
 
@@ -365,6 +434,14 @@
       const seconds = totalSeconds % 60;
 
       document.getElementById('countdownBig').textContent = `${days}d ${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
+      setCountdownTiles(days, pad(hours), pad(minutes), pad(seconds));
+    }
+
+    function setCountdownTiles(days, hours, minutes, seconds) {
+      document.getElementById('cdDays').textContent = days;
+      document.getElementById('cdHours').textContent = hours;
+      document.getElementById('cdMinutes').textContent = minutes;
+      document.getElementById('cdSeconds').textContent = seconds;
     }
 
     function saveCurrentState(includeParsed = false, buffer = null, fileName = '') {
@@ -432,7 +509,7 @@
     }
 
     function loadStorage() {
-      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || localStorage.getItem('wguProgressTracker.v2') || 'null'); }
       catch { return null; }
     }
 
